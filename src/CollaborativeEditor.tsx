@@ -47,6 +47,163 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
     const cursors = new Map<string, HTMLElement>();
     cursorsRef.current = cursors;
 
+    const updateCursor = (userId: string, user: User, range: { index: number; length: number } | null) => {
+      if (!quillRef.current || !range) {
+        removeCursor(userId);
+        return;
+      }
+
+      const quill = quillRef.current;
+      let cursorElement = cursorsRef.current.get(userId);
+
+      // Remove existing cursor
+      if (cursorElement) {
+        cursorElement.remove();
+      }
+
+      // Create new cursor
+      cursorElement = document.createElement('div');
+      cursorElement.className = 'cursor';
+      cursorElement.style.position = 'absolute';
+      cursorElement.style.pointerEvents = 'none'; // Prevent interference with editor
+      cursorElement.style.zIndex = '1000';
+      cursorElement.style.width = '2px';
+      cursorElement.style.borderLeft = `2px solid ${user.color}`;
+      
+      // Add user label
+      const label = document.createElement('div');
+      label.className = 'cursor-label';
+      label.textContent = user.name;
+      label.style.position = 'absolute';
+      label.style.top = '-24px';
+      label.style.left = '0px';
+      label.style.backgroundColor = user.color;
+      label.style.color = 'white';
+      label.style.padding = '2px 6px';
+      label.style.borderRadius = '3px';
+      label.style.fontSize = '12px';
+      label.style.whiteSpace = 'nowrap';
+      label.style.pointerEvents = 'none';
+      cursorElement.appendChild(label);
+
+      // Position cursor relative to the editor container
+      try {
+        const bounds = quill.getBounds(range.index, range.length);
+        const editorElement = quill.container.querySelector('.ql-editor') as HTMLElement;
+        
+        if (bounds && editorElement) {
+          // Get the editor's position relative to its container
+          const containerRect = quill.container.getBoundingClientRect();
+          const editorRect = editorElement.getBoundingClientRect();
+          
+          // Calculate position relative to the editor container
+          const relativeLeft = bounds.left + (editorRect.left - containerRect.left);
+          const relativeTop = bounds.top + (editorRect.top - containerRect.top);
+          
+          cursorElement.style.left = `${relativeLeft}px`;
+          cursorElement.style.top = `${relativeTop}px`;
+          cursorElement.style.height = `${bounds.height}px`;
+
+          // Add to the quill container (not the editor) to avoid interfering with content
+          quill.container.style.position = 'relative'; // Ensure container is positioned
+          quill.container.appendChild(cursorElement);
+          cursorsRef.current.set(userId, cursorElement);
+
+          // Adjust label position to avoid overlaps after DOM update
+          setTimeout(() => adjustLabelPosition(label, relativeLeft, relativeTop), 0);
+        }
+      } catch (error) {
+        console.warn('Error positioning cursor:', error);
+        // If positioning fails, remove the cursor element
+        cursorElement.remove();
+      }
+    };
+
+    const adjustLabelPosition = (label: HTMLElement, cursorLeft: number, cursorTop: number) => {
+      // Get all existing labels to check for overlaps
+      const allLabels = Array.from(quill.container.querySelectorAll('.cursor-label')) as HTMLElement[];
+      const otherLabels = allLabels.filter(l => l !== label);
+      
+      if (otherLabels.length === 0) return;
+
+      // Get label dimensions
+      const labelRect = label.getBoundingClientRect();
+      const labelWidth = labelRect.width;
+      const labelHeight = labelRect.height;
+
+      // Starting position (above cursor)
+      let bestTop = -24;
+      let bestLeft = 0;
+      let found = false;
+
+      // Try positions above the cursor first
+      const positions = [
+        { top: -24, left: 0 },     // Default: directly above
+        { top: -24, left: -labelWidth + 2 }, // Above, right-aligned
+        { top: -48, left: 0 },     // Higher up, left-aligned
+        { top: -48, left: -labelWidth + 2 }, // Higher up, right-aligned
+        { top: -24, left: 20 },    // Above, offset right
+        { top: -24, left: -20 },   // Above, offset left
+        { top: labelHeight + 4, left: 0 }, // Below cursor
+        { top: labelHeight + 4, left: -labelWidth + 2 }, // Below cursor, right-aligned
+      ];
+
+      for (const pos of positions) {
+        const testLeft = cursorLeft + pos.left;
+        const testTop = cursorTop + pos.top;
+        
+        // Check if this position overlaps with any existing labels
+        let hasOverlap = false;
+        
+        for (const otherLabel of otherLabels) {
+          const otherRect = otherLabel.getBoundingClientRect();
+          const containerRect = quill.container.getBoundingClientRect();
+          
+          // Convert other label position to relative coordinates
+          const otherLeft = otherRect.left - containerRect.left;
+          const otherTop = otherRect.top - containerRect.top;
+          
+          // Check for overlap with padding
+          const padding = 4;
+          const overlap = !(testLeft + labelWidth + padding < otherLeft ||
+                           testLeft - padding > otherLeft + otherRect.width ||
+                           testTop + labelHeight + padding < otherTop ||
+                           testTop - padding > otherTop + otherRect.height);
+          
+          if (overlap) {
+            hasOverlap = true;
+            break;
+          }
+        }
+        
+        if (!hasOverlap) {
+          bestTop = pos.top;
+          bestLeft = pos.left;
+          found = true;
+          break;
+        }
+      }
+
+      // If no good position found, use a stacked approach
+      if (!found) {
+        const stackOffset = otherLabels.length * 26; // Stack labels vertically
+        bestTop = -24 - stackOffset;
+        bestLeft = 0;
+      }
+
+      // Apply the best position
+      label.style.top = `${bestTop}px`;
+      label.style.left = `${bestLeft}px`;
+    };
+
+    const removeCursor = (userId: string) => {
+      const cursorElement = cursorsRef.current.get(userId);
+      if (cursorElement) {
+        cursorElement.remove();
+        cursorsRef.current.delete(userId);
+      }
+    };
+
     // Initialize Quill
     const quill = new Quill(editorRef.current, {
       theme: 'snow',
@@ -110,7 +267,7 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
     // Handle cursor changes from other users
     socket.on('cursor-change', ({ userId, user: userData, range }) => {
       console.log('Cursor change from user:', userId, range);
-      // updateCursor(userId, userData, range);
+      updateCursor(userId, userData, range);
     });
 
     // Handle user disconnections
@@ -144,56 +301,7 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
     };
   }, []);
 
-  const updateCursor = (userId: string, user: User, range: { index: number; length: number } | null) => {
-    if (!quillRef.current || !range) return;
 
-    const quill = quillRef.current;
-    let cursorElement = cursorsRef.current.get(userId);
-
-    // Remove existing cursor
-    if (cursorElement) {
-      cursorElement.remove();
-    }
-
-    // Create new cursor
-    cursorElement = document.createElement('div');
-    cursorElement.className = 'cursor';
-    cursorElement.style.backgroundColor = user.color;
-    
-    // Add user label
-    const label = document.createElement('div');
-    label.className = 'cursor-label';
-    label.textContent = user.name;
-    label.style.backgroundColor = user.color;
-    cursorElement.appendChild(label);
-
-    // Position cursor
-    try {
-      const bounds = quill.getBounds(range.index, range.length);
-      if (bounds) {
-        cursorElement.style.left = `${bounds.left}px`;
-        cursorElement.style.top = `${bounds.top}px`;
-        cursorElement.style.height = `${bounds.height}px`;
-
-        // Add to editor
-        const editorElement = quill.container.querySelector('.ql-editor');
-        if (editorElement) {
-          editorElement.appendChild(cursorElement);
-          cursorsRef.current.set(userId, cursorElement);
-        }
-      }
-    } catch (error) {
-      console.warn('Error positioning cursor:', error);
-    }
-  };
-
-  const removeCursor = (userId: string) => {
-    const cursorElement = cursorsRef.current.get(userId);
-    if (cursorElement) {
-      cursorElement.remove();
-      cursorsRef.current.delete(userId);
-    }
-  };
 
   return (
     <div className="collaborative-editor">

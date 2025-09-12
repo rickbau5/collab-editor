@@ -70,6 +70,25 @@ io.on('connection', (socket) => {
       socketId: socket.id // Keep socket.id for internal server use
     });
     
+    // Send all existing cursor positions to the newly joined user
+    const existingCursors = [];
+    for (const [userId, user] of connectedUsers.entries()) {
+      if (userId !== socket.id && user.cursor) {
+        socket.emit('cursor-change', {
+          userId: userId,
+          user: user,
+          range: user.cursor
+        });
+        existingCursors.push({ userId, userName: user.name, cursor: user.cursor });
+      }
+    }
+    
+    if (existingCursors.length > 0) {
+      console.log(`Sent ${existingCursors.length} existing cursor positions to newly joined user ${userData.name}:`, existingCursors);
+    } else {
+      console.log(`No existing cursors to send to newly joined user ${userData.name}`);
+    }
+    
     // Broadcast updated user list to all clients
     io.emit('users-update', Array.from(connectedUsers.values()));
     console.log(`User ${userData.name} joined (${socket.id})`);

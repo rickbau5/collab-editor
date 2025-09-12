@@ -176,6 +176,25 @@
   font-weight: 500;
   white-space: nowrap;
   z-index: 101;
+  animation: fadeIn 0.2s ease-in;
+  transition: top 0.2s ease, left 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Ensure the editor container can contain absolutely positioned cursors */
+.ql-container {
+  position: relative !important;
 }
 
 .editor-footer {
