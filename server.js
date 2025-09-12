@@ -88,7 +88,7 @@ io.on('connection', (socket) => {
       console.log('Current document length:', documentDelta.length());
       
       // Broadcast to all other clients
-      socket.broadcast.emit('text-change', delta);
+      socket.broadcast.emit('text-change', { userId: socket.id, delta });
     } catch (error) {
       console.error('Error applying delta:', error);
     }

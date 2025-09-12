@@ -77,7 +77,7 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
     socketRef.current = socket;
 
     socket.on('connect', () => {
-      console.log('Connected to server');
+      console.log('Connected to server as', socket.id);
       setIsConnected(true);
       socket.emit('user-join', user);
     });
@@ -89,34 +89,39 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
 
     // Load initial document
     socket.on('load-document', (documentState) => {
+      console.log('Loading document state:', documentState);
       if (documentState.ops && documentState.ops.length > 0) {
         quill.setContents(documentState.ops, 'silent');
       }
     });
 
     // Handle text changes from other users
-    socket.on('text-change', (delta) => {
-      console.log('Received delta from server:', delta);
+    socket.on('text-change', ({ userId, delta }) => {
+      console.log('Received delta from server for user:', userId, delta);
       quill.updateContents(delta, 'api');
     });
 
     // Handle user updates
     socket.on('users-update', (updatedUsers: User[]) => {
+      console.log('Users update:', updatedUsers);
       setUsers(updatedUsers.filter(u => u.id !== user.id));
     });
 
     // Handle cursor changes from other users
     socket.on('cursor-change', ({ userId, user: userData, range }) => {
-      updateCursor(userId, userData, range);
+      console.log('Cursor change from user:', userId, range);
+      // updateCursor(userId, userData, range);
     });
 
     // Handle user disconnections
     socket.on('user-disconnect', (userId: string) => {
+      console.log('User disconnected:', userId);
       removeCursor(userId);
     });
 
     // Listen for text changes and broadcast
     quill.on('text-change', (delta, _oldDelta, source) => {
+      console.log('Text change detected:', delta);
       if (source === 'user') {
         console.log('Broadcasting delta:', delta);
         socket.emit('text-change', delta, source);
@@ -125,6 +130,7 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
 
     // Listen for selection changes and broadcast cursor position
     quill.on('selection-change', (range, _oldRange, source) => {
+      console.log('Selection change detected:', range);
       if (source === 'user') {
         socket.emit('selection-change', range, source);
       }
