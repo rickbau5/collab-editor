@@ -162,7 +162,7 @@
   border-left: 2px solid;
   z-index: 100;
   pointer-events: none;
-  transition: all 0.1s ease;
+  transition: left 0.15s ease-out, top 0.15s ease-out, height 0.15s ease-out;
 }
 
 .cursor-label {
@@ -176,8 +176,7 @@
   font-weight: 500;
   white-space: nowrap;
   z-index: 101;
-  animation: fadeIn 0.2s ease-in;
-  transition: top 0.2s ease, left 0.2s ease;
+  transition: top 0.15s ease-out, left 0.15s ease-out, opacity 0.1s ease-out;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 

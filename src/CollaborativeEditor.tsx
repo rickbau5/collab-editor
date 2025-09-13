@@ -42,6 +42,7 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
   const cursorsRef = useRef<Map<string, HTMLElement>>(new Map());
   const userCursorsRef = useRef<Map<string, { index: number; length: number }>>(new Map());
   const usersRef = useRef<User[]>([]);
+  const cursorUpdateTimeouts = useRef<Map<string, NodeJS.Timeout>>(new Map());
 
   // Function to transform cursor position based on a delta
   const transformCursorPosition = (cursorIndex: number, delta: Delta): number => {
@@ -54,8 +55,8 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
           const retainLength = typeof op.retain === 'number' ? op.retain : 0;
           currentIndex += retainLength;
         } else if (op.insert) {
-          if (currentIndex <= cursorIndex) {
-            // Insert happened before or at cursor, move cursor forward
+          if (currentIndex < cursorIndex) {
+            // Insert happened strictly before cursor, move cursor forward
             const insertLength = typeof op.insert === 'string' ? op.insert.length : 1;
             transformedIndex += insertLength;
           }
@@ -100,7 +101,28 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
     const userCursors = userCursorsRef.current;
     cursorsRef.current = cursors;
 
-    const updateCursor = (userId: string, user: User, range: { index: number; length: number } | null) => {
+    // Debounced cursor update function
+    const debouncedUpdateCursor = (userId: string, user: User, range: { index: number; length: number } | null, immediate = false, previousRange?: { index: number; length: number } | null) => {
+      // Clear existing timeout for this user
+      const existingTimeout = cursorUpdateTimeouts.current.get(userId);
+      if (existingTimeout) {
+        clearTimeout(existingTimeout);
+      }
+
+      if (immediate) {
+        updateCursor(userId, user, range, previousRange);
+      } else {
+        // Set new timeout
+        const timeout = setTimeout(() => {
+          updateCursor(userId, user, range, previousRange);
+          cursorUpdateTimeouts.current.delete(userId);
+        }, 50); // 50ms debounce
+        
+        cursorUpdateTimeouts.current.set(userId, timeout);
+      }
+    };
+
+    const updateCursor = (userId: string, user: User, range: { index: number; length: number } | null, previousRange?: { index: number; length: number } | null) => {
       if (!quillRef.current || !range) {
         removeCursor(userId);
         return;
@@ -108,36 +130,43 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
 
       const quill = quillRef.current;
       let cursorElement = cursorsRef.current.get(userId);
+      let isNewCursor = false;
 
-      // Remove existing cursor
-      if (cursorElement) {
-        cursorElement.remove();
+      // Determine if this is a small movement (1 character) for instant transitions
+      const isSmallMovement = previousRange && Math.abs(range.index - previousRange.index) === 1;
+
+      // Create cursor if it doesn't exist, otherwise reuse existing
+      if (!cursorElement) {
+        cursorElement = document.createElement('div');
+        cursorElement.className = 'cursor';
+        cursorElement.style.position = 'absolute';
+        cursorElement.style.pointerEvents = 'none';
+        cursorElement.style.zIndex = '1000';
+        cursorElement.style.width = '2px';
+        cursorElement.style.borderLeft = `2px solid ${user.color}`;
+        // Always start with transitions enabled
+        cursorElement.style.transition = 'left 0.15s ease-out, top 0.15s ease-out';
+        
+        // Add user label
+        const label = document.createElement('div');
+        label.className = 'cursor-label';
+        label.textContent = user.name;
+        label.style.position = 'absolute';
+        label.style.top = '-24px';
+        label.style.left = '0px';
+        label.style.backgroundColor = user.color;
+        label.style.color = 'white';
+        label.style.padding = '2px 6px';
+        label.style.borderRadius = '3px';
+        label.style.fontSize = '12px';
+        label.style.whiteSpace = 'nowrap';
+        label.style.pointerEvents = 'none';
+        label.style.transition = 'top 0.15s ease-out, left 0.15s ease-out, opacity 0.1s ease-out';
+        label.style.opacity = '1';
+        cursorElement.appendChild(label);
+        
+        isNewCursor = true;
       }
-
-      // Create new cursor
-      cursorElement = document.createElement('div');
-      cursorElement.className = 'cursor';
-      cursorElement.style.position = 'absolute';
-      cursorElement.style.pointerEvents = 'none'; // Prevent interference with editor
-      cursorElement.style.zIndex = '1000';
-      cursorElement.style.width = '2px';
-      cursorElement.style.borderLeft = `2px solid ${user.color}`;
-      
-      // Add user label
-      const label = document.createElement('div');
-      label.className = 'cursor-label';
-      label.textContent = user.name;
-      label.style.position = 'absolute';
-      label.style.top = '-24px';
-      label.style.left = '0px';
-      label.style.backgroundColor = user.color;
-      label.style.color = 'white';
-      label.style.padding = '2px 6px';
-      label.style.borderRadius = '3px';
-      label.style.fontSize = '12px';
-      label.style.whiteSpace = 'nowrap';
-      label.style.pointerEvents = 'none';
-      cursorElement.appendChild(label);
 
       // Position cursor relative to the editor container
       try {
@@ -153,17 +182,33 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
           const relativeLeft = bounds.left + (editorRect.left - containerRect.left);
           const relativeTop = bounds.top + (editorRect.top - containerRect.top);
           
+          // For small movements (single character), disable cursor transition temporarily
+          if (isSmallMovement && !isNewCursor) {
+            // Temporarily disable cursor transitions for instant movement
+            cursorElement.style.transition = 'none';
+            
+            // Re-enable transitions after the position update
+            setTimeout(() => {
+              cursorElement.style.transition = 'left 0.15s ease-out, top 0.15s ease-out';
+            }, 0);
+          }
+          
           cursorElement.style.left = `${relativeLeft}px`;
           cursorElement.style.top = `${relativeTop}px`;
           cursorElement.style.height = `${bounds.height}px`;
 
-          // Add to the quill container (not the editor) to avoid interfering with content
-          quill.container.style.position = 'relative'; // Ensure container is positioned
-          quill.container.appendChild(cursorElement);
-          cursorsRef.current.set(userId, cursorElement);
+          // Add to the quill container only if it's a new cursor
+          if (isNewCursor) {
+            quill.container.style.position = 'relative'; // Ensure container is positioned
+            quill.container.appendChild(cursorElement);
+            cursorsRef.current.set(userId, cursorElement);
+          }
 
-          // Adjust label position to avoid overlaps after DOM update
-          setTimeout(() => adjustLabelPosition(label, relativeLeft, relativeTop), 0);
+          // Get the label element and adjust its position
+          const label = cursorElement.querySelector('.cursor-label') as HTMLElement;
+          if (label) {
+            setTimeout(() => adjustLabelPosition(label, relativeLeft, relativeTop), 0);
+          }
         }
       } catch (error) {
         console.warn('Error positioning cursor:', error);
@@ -255,6 +300,13 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
         cursorElement.remove();
         cursorsRef.current.delete(userId);
       }
+      
+      // Clear any pending debounced updates
+      const timeout = cursorUpdateTimeouts.current.get(userId);
+      if (timeout) {
+        clearTimeout(timeout);
+        cursorUpdateTimeouts.current.delete(userId);
+      }
     };
 
     // Initialize Quill
@@ -314,12 +366,20 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
         if (cursorUserId !== userId) { // Don't transform the cursor of the user who made the change
           const newIndex = transformCursorPosition(cursorPos.index, delta);
           const newCursorPos = { index: newIndex, length: cursorPos.length };
-          userCursorsRef.current.set(cursorUserId, newCursorPos);
           
-          // Find the user data for this cursor
-          const userData = usersRef.current.find(u => u.id === cursorUserId);
-          if (userData) {
-            updateCursor(cursorUserId, userData, newCursorPos);
+          // Only update if the position actually changed
+          if (newIndex !== cursorPos.index) {
+            userCursorsRef.current.set(cursorUserId, newCursorPos);
+            
+            // Find the user data for this cursor
+            const userData = usersRef.current.find(u => u.id === cursorUserId);
+            if (userData) {
+              // Use debounced update for automatic position adjustments
+              debouncedUpdateCursor(cursorUserId, userData, newCursorPos, false, cursorPos);
+            }
+          } else {
+            // Position didn't change, just update the stored position for consistency
+            userCursorsRef.current.set(cursorUserId, newCursorPos);
           }
         }
       });
@@ -338,13 +398,18 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
     // Handle cursor changes from other users
     socket.on('cursor-change', ({ userId, user: userData, range }) => {
       console.log('Cursor change from user:', userId, range);
+      
+      // Get previous cursor position for movement detection
+      const previousRange = userCursorsRef.current.get(userId);
+      
       // Store the cursor position for this user
       if (range) {
         userCursorsRef.current.set(userId, { index: range.index, length: range.length });
       } else {
         userCursorsRef.current.delete(userId);
       }
-      updateCursor(userId, userData, range);
+      // Use immediate update for intentional cursor movements
+      debouncedUpdateCursor(userId, userData, range, true, previousRange);
     });
 
     // Handle user disconnections
@@ -365,15 +430,23 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
         userCursorsRef.current.forEach((cursorPos, cursorUserId) => {
           const newIndex = transformCursorPosition(cursorPos.index, delta);
           const newCursorPos = { index: newIndex, length: cursorPos.length };
-          userCursorsRef.current.set(cursorUserId, newCursorPos);
           
-          // Find the user data for this cursor and update local display
-          const userData = usersRef.current.find(u => u.socketId === cursorUserId);
-          if (userData) {
-            updateCursor(cursorUserId, userData, newCursorPos);
-            console.log('Updated cursor for user:', cursorUserId, newCursorPos);
+          // Only update if the position actually changed
+          if (newIndex !== cursorPos.index) {
+            userCursorsRef.current.set(cursorUserId, newCursorPos);
+            
+            // Find the user data for this cursor and update local display
+            const userData = usersRef.current.find(u => u.socketId === cursorUserId);
+            if (userData) {
+              // Use debounced update for automatic position adjustments
+              debouncedUpdateCursor(cursorUserId, userData, newCursorPos, false, cursorPos);
+              console.log('Updated cursor for user:', cursorUserId, newCursorPos);
+            } else {
+              console.log('No user data found for cursor userId:', cursorUserId, usersRef.current);
+            }
           } else {
-            console.log('No user data found for cursor userId:', cursorUserId, usersRef.current);
+            // Position didn't change, just update the stored position for consistency
+            userCursorsRef.current.set(cursorUserId, newCursorPos);
           }
         });
         
