@@ -10,6 +10,7 @@ interface User {
   name: string;
   color: string;
   cursor: { index: number; length: number } | null;
+  socketId?: string;
 }
 
 interface CollaborativeEditorProps {
@@ -21,6 +22,16 @@ const COLORS = [
   '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F'
 ];
 
+interface DeltaOp {
+  retain?: number | Record<string, unknown>;
+  insert?: string | object;
+  delete?: number;
+}
+
+interface Delta {
+  ops?: DeltaOp[];
+}
+
 const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
   const editorRef = useRef<HTMLDivElement>(null);
   const quillRef = useRef<Quill | null>(null);
@@ -29,9 +40,50 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const cursorsRef = useRef<Map<string, HTMLElement>>(new Map());
+  const userCursorsRef = useRef<Map<string, { index: number; length: number }>>(new Map());
+  const usersRef = useRef<User[]>([]);
+
+  // Function to transform cursor position based on a delta
+  const transformCursorPosition = (cursorIndex: number, delta: Delta): number => {
+    let transformedIndex = cursorIndex;
+    let currentIndex = 0;
+
+    if (delta.ops) {
+      for (const op of delta.ops) {
+        if (op.retain) {
+          const retainLength = typeof op.retain === 'number' ? op.retain : 0;
+          currentIndex += retainLength;
+        } else if (op.insert) {
+          if (currentIndex <= cursorIndex) {
+            // Insert happened before or at cursor, move cursor forward
+            const insertLength = typeof op.insert === 'string' ? op.insert.length : 1;
+            transformedIndex += insertLength;
+          }
+          currentIndex += typeof op.insert === 'string' ? op.insert.length : 1;
+        } else if (op.delete) {
+          const deleteLength = op.delete;
+          const deleteStart = currentIndex;
+          const deleteEnd = currentIndex + deleteLength;
+          
+          if (deleteEnd <= cursorIndex) {
+            // Delete is entirely before cursor
+            transformedIndex -= deleteLength;
+          } else if (deleteStart < cursorIndex) {
+            // Delete overlaps with or includes cursor position
+            // Move cursor to the start of the deletion
+            transformedIndex = deleteStart;
+          }
+          // If delete is entirely after cursor, no adjustment needed
+          // Don't advance currentIndex for delete operations
+        }
+      }
+    }
+
+    return Math.max(0, transformedIndex);
+  };
 
   useEffect(() => {
-    if (!editorRef.current) return;
+    if (!editorRef.current || quillRef.current) return;
 
     // Generate user info
     const userName = `User_${Date.now().toString().slice(-3)}_${Math.floor(Math.random() * 100)}`;
@@ -45,6 +97,7 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
     setCurrentUser(user);
 
     const cursors = new Map<string, HTMLElement>();
+    const userCursors = userCursorsRef.current;
     cursorsRef.current = cursors;
 
     const updateCursor = (userId: string, user: User, range: { index: number; length: number } | null) => {
@@ -255,18 +308,42 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
     // Handle text changes from other users
     socket.on('text-change', ({ userId, delta }) => {
       console.log('Received delta from server for user:', userId, delta);
+      
+      // Transform all stored cursor positions based on this delta
+      userCursorsRef.current.forEach((cursorPos, cursorUserId) => {
+        if (cursorUserId !== userId) { // Don't transform the cursor of the user who made the change
+          const newIndex = transformCursorPosition(cursorPos.index, delta);
+          const newCursorPos = { index: newIndex, length: cursorPos.length };
+          userCursorsRef.current.set(cursorUserId, newCursorPos);
+          
+          // Find the user data for this cursor
+          const userData = usersRef.current.find(u => u.id === cursorUserId);
+          if (userData) {
+            updateCursor(cursorUserId, userData, newCursorPos);
+          }
+        }
+      });
+      
       quill.updateContents(delta, 'api');
     });
 
     // Handle user updates
     socket.on('users-update', (updatedUsers: User[]) => {
       console.log('Users update:', updatedUsers);
-      setUsers(updatedUsers.filter(u => u.id !== user.id));
+      const filteredUsers = updatedUsers.filter(u => u.id !== user.id);
+      setUsers(filteredUsers);
+      usersRef.current = filteredUsers;
     });
 
     // Handle cursor changes from other users
     socket.on('cursor-change', ({ userId, user: userData, range }) => {
       console.log('Cursor change from user:', userId, range);
+      // Store the cursor position for this user
+      if (range) {
+        userCursorsRef.current.set(userId, { index: range.index, length: range.length });
+      } else {
+        userCursorsRef.current.delete(userId);
+      }
       updateCursor(userId, userData, range);
     });
 
@@ -274,6 +351,7 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
     socket.on('user-disconnect', (userId: string) => {
       console.log('User disconnected:', userId);
       removeCursor(userId);
+      userCursorsRef.current.delete(userId);
     });
 
     // Listen for text changes and broadcast
@@ -282,6 +360,30 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
       if (source === 'user') {
         console.log('Broadcasting delta:', delta);
         socket.emit('text-change', delta, source);
+        
+        // Transform local view of remote cursors based on local changes
+        userCursorsRef.current.forEach((cursorPos, cursorUserId) => {
+          const newIndex = transformCursorPosition(cursorPos.index, delta);
+          const newCursorPos = { index: newIndex, length: cursorPos.length };
+          userCursorsRef.current.set(cursorUserId, newCursorPos);
+          
+          // Find the user data for this cursor and update local display
+          const userData = usersRef.current.find(u => u.socketId === cursorUserId);
+          if (userData) {
+            updateCursor(cursorUserId, userData, newCursorPos);
+            console.log('Updated cursor for user:', cursorUserId, newCursorPos);
+          } else {
+            console.log('No user data found for cursor userId:', cursorUserId, usersRef.current);
+          }
+        });
+        
+        // Rebroadcast current cursor position after text change
+        setTimeout(() => {
+          const range = quill.getSelection();
+          if (range) {
+            socket.emit('selection-change', range, 'user');
+          }
+        }, 0);
       }
     });
 
@@ -294,10 +396,21 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
     });
 
     return () => {
-      socket.disconnect();
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+      }
       // Clean up cursors
       cursors.forEach(cursor => cursor.remove());
       cursors.clear();
+      userCursors.clear();
+      // Clean up Quill instance
+      if (quillRef.current) {
+        const container = quillRef.current.container;
+        if (container && container.parentNode) {
+          container.parentNode.removeChild(container);
+        }
+        quillRef.current = null;
+      }
     };
   }, []);
 
