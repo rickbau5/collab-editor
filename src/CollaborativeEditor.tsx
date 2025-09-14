@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import Quill from 'quill';
 import { io, Socket } from 'socket.io-client';
 import { v4 as uuidv4 } from 'uuid';
@@ -11,6 +11,12 @@ interface User {
   color: string;
   cursor: { index: number; length: number } | null;
   socketId?: string;
+}
+
+interface ActiveHighlight {
+  userId: string;
+  range: { index: number; length: number };
+  color: string;
 }
 
 interface CollaborativeEditorProps {
@@ -43,6 +49,8 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
   const userCursorsRef = useRef<Map<string, { index: number; length: number }>>(new Map());
   const usersRef = useRef<User[]>([]);
   const cursorUpdateTimeouts = useRef<Map<string, NodeJS.Timeout>>(new Map());
+  const flashTimeouts = useRef<Map<string, NodeJS.Timeout>>(new Map());
+  const activeHighlightsRef = useRef<Map<string, ActiveHighlight>>(new Map());
 
   // Function to transform cursor position based on a delta
   const transformCursorPosition = (cursorIndex: number, delta: Delta): number => {
@@ -82,6 +90,99 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
 
     return Math.max(0, transformedIndex);
   };
+
+  // Function to transform highlight ranges based on a delta
+  const transformHighlightRange = useCallback((range: { index: number; length: number }, delta: Delta): { index: number; length: number } => {
+    const startIndex = transformCursorPosition(range.index, delta);
+    const endIndex = transformCursorPosition(range.index + range.length, delta);
+    return {
+      index: startIndex,
+      length: Math.max(0, endIndex - startIndex)
+    };
+  }, []);
+
+  // Function to apply all active highlights
+  const applyAllHighlights = useCallback(() => {
+    if (!quillRef.current) return;
+
+    const quill = quillRef.current;
+    
+    // Clear all existing background formatting
+    try {
+      const fullText = quill.getText();
+      if (fullText.length > 0) {
+        quill.formatText(0, fullText.length, 'background', false, 'silent');
+      }
+    } catch (error) {
+      console.warn('Error clearing highlights:', error);
+    }
+
+    // Apply all active highlights
+    activeHighlightsRef.current.forEach(highlight => {
+      try {
+        if (highlight.range.length > 0) {
+          quill.formatText(highlight.range.index, highlight.range.length, 'background', `${highlight.color}40`, 'silent');
+        }
+      } catch (error) {
+        console.warn('Error applying highlight:', error);
+      }
+    });
+  }, []);
+
+  // Function to add or update a highlight
+  const updateHighlight = useCallback((userId: string, range: { index: number; length: number } | null, color: string) => {
+    if (range && range.length > 0) {
+      // Add or update highlight
+      const highlight: ActiveHighlight = {
+        userId,
+        range,
+        color
+      };
+      
+      activeHighlightsRef.current.set(userId, highlight);
+      
+      // Flash the user's label
+      const cursorElement = cursorsRef.current.get(userId);
+      if (cursorElement) {
+        const label = cursorElement.querySelector('.cursor-label') as HTMLElement;
+        if (label) {
+          // Clear any existing flash timeout
+          const existingTimeout = flashTimeouts.current.get(userId);
+          if (existingTimeout) {
+            clearTimeout(existingTimeout);
+          }
+
+          // Remove flash class first (in case it's already there)
+          label.classList.remove('flash');
+          
+          // Force reflow to ensure the class removal takes effect
+          void label.offsetHeight;
+          
+          // Add flash class
+          label.classList.add('flash');
+
+          // Remove flash class after animation completes
+          const timeout = setTimeout(() => {
+            label.classList.remove('flash');
+            flashTimeouts.current.delete(userId);
+          }, 3000);
+
+          flashTimeouts.current.set(userId, timeout);
+        }
+      }
+    } else {
+      // Remove highlight if range is empty or null
+      activeHighlightsRef.current.delete(userId);
+    }
+    
+    // Reapply all highlights
+    applyAllHighlights();
+  }, [applyAllHighlights]);
+
+    // Function to add a new highlight
+    const addHighlight = useCallback((userId: string, range: { index: number; length: number }, color: string) => {
+      updateHighlight(userId, range, color);
+    }, [updateHighlight]);
 
   useEffect(() => {
     if (!editorRef.current || quillRef.current) return;
@@ -467,8 +568,31 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
           }
         }
       });
+
+      // Transform all active highlights based on this delta
+      const transformedHighlights = new Map<string, ActiveHighlight>();
+      activeHighlightsRef.current.forEach((highlight, highlightUserId) => {
+        if (highlightUserId !== userId) { // Don't transform highlights from the user making the change
+          const transformedRange = transformHighlightRange(highlight.range, delta);
+          if (transformedRange.length > 0) {
+            transformedHighlights.set(highlightUserId, {
+              ...highlight,
+              range: transformedRange
+            });
+          }
+        } else {
+          // Keep the original highlight for the user making the change
+          transformedHighlights.set(highlightUserId, highlight);
+        }
+      });
+      activeHighlightsRef.current = transformedHighlights;
       
       quill.updateContents(delta, 'api');
+
+      // Reapply highlights after text changes
+      setTimeout(() => {
+        applyAllHighlights();
+      }, 0);
     });
 
     // Handle user updates
@@ -489,9 +613,20 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
       // Store the cursor position for this user
       if (range) {
         userCursorsRef.current.set(userId, { index: range.index, length: range.length });
+        
+        // If the new selection has length, update highlight
+        if (range.length > 0) {
+          updateHighlight(userId, range, userData.color);
+        } else {
+          // User moved to a cursor position (no selection), remove highlight
+          updateHighlight(userId, null, userData.color);
+        }
       } else {
         userCursorsRef.current.delete(userId);
+        // Remove highlight when user has no cursor
+        updateHighlight(userId, null, userData.color);
       }
+      
       // Use immediate update for intentional cursor movements
       debouncedUpdateCursor(userId, userData, range, true, previousRange);
     });
@@ -501,6 +636,17 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
       console.log('User disconnected:', userId);
       removeCursor(userId);
       userCursorsRef.current.delete(userId);
+      // Remove their highlights
+      activeHighlightsRef.current.delete(userId);
+      applyAllHighlights();
+    });
+
+    // Handle highlight changes from other users
+    socket.on('highlight-change', ({ userId, user: userData, range }) => {
+      console.log('Highlight change from user:', userId, range);
+      if (range && range.length > 0) {
+        addHighlight(userId, range, userData.color);
+      }
     });
 
     // Listen for text changes and broadcast
@@ -533,6 +679,19 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
             userCursorsRef.current.set(cursorUserId, newCursorPos);
           }
         });
+
+        // Transform local view of highlights based on local changes
+        const transformedHighlights = new Map<string, ActiveHighlight>();
+        activeHighlightsRef.current.forEach((highlight, highlightUserId) => {
+          const transformedRange = transformHighlightRange(highlight.range, delta);
+          if (transformedRange.length > 0) {
+            transformedHighlights.set(highlightUserId, {
+              ...highlight,
+              range: transformedRange
+            });
+          }
+        });
+        activeHighlightsRef.current = transformedHighlights;
         
         // Rebroadcast current cursor position after text change
         setTimeout(() => {
@@ -542,6 +701,9 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
           }
           // Update label visibility after text changes
           updateLabelVisibility();
+
+          // Reapply highlights after local text changes
+          applyAllHighlights();
         }, 0);
       }
     });
@@ -551,6 +713,11 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
       console.log('Selection change detected:', range);
       if (source === 'user') {
         socket.emit('selection-change', range, source);
+        
+        // If the selection has length > 0, also emit a highlight event
+        if (range && range.length > 0) {
+          socket.emit('highlight-change', range, source);
+        }
       }
       // Update label visibility based on new cursor position
       updateLabelVisibility();
@@ -573,7 +740,7 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
         quillRef.current = null;
       }
     };
-  }, []);
+  }, [addHighlight, updateHighlight, applyAllHighlights, transformHighlightRange]);
 
 
 

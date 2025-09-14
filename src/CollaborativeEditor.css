@@ -258,6 +258,41 @@
   animation: cursorFadeIn 0.2s ease-out;
 }
 
+/* Remote user highlighting styles */
+.remote-highlight {
+  background-color: rgba(255, 107, 107, 0.2);
+  border-radius: 2px;
+  pointer-events: none;
+  position: relative;
+  display: inline;
+}
+
+/* Label flashing animation */
+@keyframes flashLabel {
+  0% {
+    opacity: 0;
+    transform: translateY(-5px) scale(0.8);
+  }
+  15% {
+    opacity: 1;
+    transform: translateY(0) scale(1.05);
+  }
+  85% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-5px) scale(0.8);
+  }
+}
+
+.cursor-label.flash {
+  animation: flashLabel 3s ease-out forwards;
+  opacity: 1 !important;
+  z-index: 102;
+}
+
 /* Hover effects */
 .ql-toolbar .ql-picker-label:hover,
 .ql-toolbar .ql-picker-item:hover {
