@@ -140,12 +140,17 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
         cursorElement = document.createElement('div');
         cursorElement.className = 'cursor';
         cursorElement.style.position = 'absolute';
-        cursorElement.style.pointerEvents = 'none';
+        cursorElement.style.pointerEvents = 'none'; // Visual cursor doesn't handle events
         cursorElement.style.zIndex = '1000';
         cursorElement.style.width = '2px';
         cursorElement.style.borderLeft = `2px solid ${user.color}`;
         // Always start with transitions enabled
         cursorElement.style.transition = 'left 0.15s ease-out, top 0.15s ease-out';
+        
+        // Create invisible hover area
+        const hoverArea = document.createElement('div');
+        hoverArea.className = 'cursor-hover-area';
+        cursorElement.appendChild(hoverArea);
         
         // Add user label
         const label = document.createElement('div');
@@ -162,8 +167,21 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
         label.style.whiteSpace = 'nowrap';
         label.style.pointerEvents = 'none';
         label.style.transition = 'top 0.15s ease-out, left 0.15s ease-out, opacity 0.1s ease-out';
-        label.style.opacity = '1';
+        label.style.opacity = '0'; // Start hidden, will be shown based on proximity
         cursorElement.appendChild(label);
+        
+        // Add hover functionality to show/hide label
+        const currentCursorElement = cursorElement;
+        hoverArea.addEventListener('mouseenter', () => {
+          label.style.opacity = '1';
+          currentCursorElement.setAttribute('data-hovered', 'true');
+        });
+        
+        hoverArea.addEventListener('mouseleave', () => {
+          currentCursorElement.removeAttribute('data-hovered');
+          // Only hide if not in proximity range
+          setTimeout(() => updateLabelVisibility(), 0);
+        });
         
         isNewCursor = true;
       }
@@ -207,13 +225,79 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
           // Get the label element and adjust its position
           const label = cursorElement.querySelector('.cursor-label') as HTMLElement;
           if (label) {
-            setTimeout(() => adjustLabelPosition(label, relativeLeft, relativeTop), 0);
+            setTimeout(() => {
+              adjustLabelPosition(label, relativeLeft, relativeTop);
+              updateLabelVisibility(); // Check proximity and update all label visibility
+            }, 0);
           }
         }
       } catch (error) {
         console.warn('Error positioning cursor:', error);
         // If positioning fails, remove the cursor element
         cursorElement.remove();
+      }
+    };
+
+    // Function to update label visibility based on proximity to local cursor
+    const updateLabelVisibility = () => {
+      if (!quillRef.current) return;
+      
+      const quill = quillRef.current;
+      const localSelection = quill.getSelection();
+      
+      if (!localSelection) {
+        // No local selection, hide labels except those being hovered
+        cursorsRef.current.forEach((cursorElement) => {
+          const label = cursorElement.querySelector('.cursor-label') as HTMLElement;
+          if (label) {
+            const isHovered = cursorElement.hasAttribute('data-hovered');
+            if (!isHovered) {
+              label.style.opacity = '0';
+            }
+          }
+        });
+        return;
+      }
+
+      const proximityThreshold = 100; // pixels
+
+      // Get local cursor position
+      try {
+        const localBounds = quill.getBounds(localSelection.index, localSelection.length);
+        const editorElement = quill.container.querySelector('.ql-editor') as HTMLElement;
+        
+        if (localBounds && editorElement) {
+          const containerRect = quill.container.getBoundingClientRect();
+          const editorRect = editorElement.getBoundingClientRect();
+          
+          const localLeft = localBounds.left + (editorRect.left - containerRect.left);
+          const localTop = localBounds.top + (editorRect.top - containerRect.top);
+
+          // Check each remote cursor for proximity
+          cursorsRef.current.forEach((cursorElement) => {
+            const label = cursorElement.querySelector('.cursor-label') as HTMLElement;
+            if (label) {
+              const cursorLeft = parseFloat(cursorElement.style.left);
+              const cursorTop = parseFloat(cursorElement.style.top);
+              
+              // Calculate distance
+              const distance = Math.sqrt(
+                Math.pow(localLeft - cursorLeft, 2) + 
+                Math.pow(localTop - cursorTop, 2)
+              );
+              
+              // Show/hide label based on proximity or hover state
+              const isHovered = cursorElement.hasAttribute('data-hovered');
+              if (distance <= proximityThreshold || isHovered) {
+                label.style.opacity = '1';
+              } else {
+                label.style.opacity = '0';
+              }
+            }
+          });
+        }
+      } catch (error) {
+        console.warn('Error calculating cursor proximity:', error);
       }
     };
 
@@ -456,6 +540,8 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
           if (range) {
             socket.emit('selection-change', range, 'user');
           }
+          // Update label visibility after text changes
+          updateLabelVisibility();
         }, 0);
       }
     });
@@ -466,6 +552,8 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
       if (source === 'user') {
         socket.emit('selection-change', range, source);
       }
+      // Update label visibility based on new cursor position
+      updateLabelVisibility();
     });
 
     return () => {
