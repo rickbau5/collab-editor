@@ -137,6 +137,22 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Handle highlight changes
+  socket.on('highlight-change', (range, source) => {
+    if (source !== 'user') return;
+    
+    // Broadcast highlight to all other clients
+    if (connectedUsers.has(socket.id)) {
+      const user = connectedUsers.get(socket.id);
+      socket.broadcast.emit('highlight-change', {
+        userId: socket.id,
+        user: user,
+        range: range
+      });
+      console.log(`User ${user.name} created highlight at range:`, range);
+    }
+  });
+
   // Handle disconnection
   socket.on('disconnect', () => {
     const user = connectedUsers.get(socket.id);

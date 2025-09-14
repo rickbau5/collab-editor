@@ -45,6 +45,7 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
   const [users, setUsers] = useState<User[]>([]);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const [userCursorStates, setUserCursorStates] = useState<Map<string, boolean>>(new Map());
   const cursorsRef = useRef<Map<string, HTMLElement>>(new Map());
   const userCursorsRef = useRef<Map<string, { index: number; length: number }>>(new Map());
   const usersRef = useRef<User[]>([]);
@@ -127,6 +128,57 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
         console.warn('Error applying highlight:', error);
       }
     });
+  }, []);
+
+  // Function to jump to a user's cursor position
+  const jumpToUser = useCallback((userId: string) => {
+    if (!quillRef.current) return;
+
+    const userCursor = userCursorsRef.current.get(userId);
+    if (!userCursor) {
+      console.log('No cursor position found for user:', userId);
+      return;
+    }
+
+    const quill = quillRef.current;
+    
+    try {
+      // Set the local selection to the user's cursor position
+      quill.setSelection(userCursor.index, userCursor.length, 'user');
+      
+      // Ensure the cursor position is visible by scrolling to it
+      const bounds = quill.getBounds(userCursor.index, userCursor.length);
+      if (bounds) {
+        const editorElement = quill.container.querySelector('.ql-editor') as HTMLElement;
+        if (editorElement) {
+          // Scroll the cursor position into view
+          const scrollContainer = editorElement;
+          const targetTop = bounds.top;
+          const containerHeight = scrollContainer.clientHeight;
+          const scrollTop = scrollContainer.scrollTop;
+          
+          // If the cursor is not visible, scroll to center it
+          if (targetTop < 0 || targetTop > containerHeight - 50) {
+            const newScrollTop = scrollTop + targetTop - containerHeight / 2;
+            scrollContainer.scrollTo({
+              top: Math.max(0, newScrollTop),
+              behavior: 'smooth'
+            });
+          }
+        }
+      }
+      
+      // Focus the editor
+      quill.focus();
+      
+      // Find the user data to show feedback
+      const userData = usersRef.current.find(u => u.id === userId);
+      if (userData) {
+        console.log(`Jumped to ${userData.name}'s cursor at position ${userCursor.index}`);
+      }
+    } catch (error) {
+      console.warn('Error jumping to user cursor:', error);
+    }
   }, []);
 
   // Function to add or update a highlight
@@ -546,9 +598,13 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
     socket.on('text-change', ({ userId, delta }) => {
       console.log('Received delta from server for user:', userId, delta);
       
+      // Find the actual user ID from the socket ID
+      const changeUser = usersRef.current.find(u => u.socketId === userId);
+      const actualChangeUserId = changeUser?.id;
+      
       // Transform all stored cursor positions based on this delta
       userCursorsRef.current.forEach((cursorPos, cursorUserId) => {
-        if (cursorUserId !== userId) { // Don't transform the cursor of the user who made the change
+        if (cursorUserId !== actualChangeUserId) { // Don't transform the cursor of the user who made the change
           const newIndex = transformCursorPosition(cursorPos.index, delta);
           const newCursorPos = { index: newIndex, length: cursorPos.length };
           
@@ -560,7 +616,9 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
             const userData = usersRef.current.find(u => u.id === cursorUserId);
             if (userData) {
               // Use debounced update for automatic position adjustments
-              debouncedUpdateCursor(cursorUserId, userData, newCursorPos, false, cursorPos);
+              // Note: Need to use socket ID for cursor DOM element tracking
+              const socketId = userData.socketId || userId;
+              debouncedUpdateCursor(socketId, userData, newCursorPos, false, cursorPos);
             }
           } else {
             // Position didn't change, just update the stored position for consistency
@@ -572,7 +630,7 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
       // Transform all active highlights based on this delta
       const transformedHighlights = new Map<string, ActiveHighlight>();
       activeHighlightsRef.current.forEach((highlight, highlightUserId) => {
-        if (highlightUserId !== userId) { // Don't transform highlights from the user making the change
+        if (highlightUserId !== actualChangeUserId) { // Don't transform highlights from the user making the change
           const transformedRange = transformHighlightRange(highlight.range, delta);
           if (transformedRange.length > 0) {
             transformedHighlights.set(highlightUserId, {
@@ -607,37 +665,71 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
     socket.on('cursor-change', ({ userId, user: userData, range }) => {
       console.log('Cursor change from user:', userId, range);
       
+      // Use the user's actual ID (UUID) instead of socket ID for consistency
+      const actualUserId = userData.id;
+      
       // Get previous cursor position for movement detection
-      const previousRange = userCursorsRef.current.get(userId);
+      const previousRange = userCursorsRef.current.get(actualUserId);
       
       // Store the cursor position for this user
       if (range) {
-        userCursorsRef.current.set(userId, { index: range.index, length: range.length });
+        userCursorsRef.current.set(actualUserId, { index: range.index, length: range.length });
+        
+        // Update cursor state for UI
+        setUserCursorStates(prev => new Map(prev).set(actualUserId, true));
         
         // If the new selection has length, update highlight
         if (range.length > 0) {
-          updateHighlight(userId, range, userData.color);
+          updateHighlight(actualUserId, range, userData.color);
         } else {
           // User moved to a cursor position (no selection), remove highlight
-          updateHighlight(userId, null, userData.color);
+          updateHighlight(actualUserId, null, userData.color);
         }
       } else {
-        userCursorsRef.current.delete(userId);
+        userCursorsRef.current.delete(actualUserId);
+        
+        // Update cursor state for UI
+        setUserCursorStates(prev => {
+          const newMap = new Map(prev);
+          newMap.delete(actualUserId);
+          return newMap;
+        });
+        
         // Remove highlight when user has no cursor
-        updateHighlight(userId, null, userData.color);
+        updateHighlight(actualUserId, null, userData.color);
       }
       
       // Use immediate update for intentional cursor movements
+      // Note: Still using socket ID for cursor DOM element tracking
       debouncedUpdateCursor(userId, userData, range, true, previousRange);
     });
 
     // Handle user disconnections
-    socket.on('user-disconnect', (userId: string) => {
-      console.log('User disconnected:', userId);
-      removeCursor(userId);
-      userCursorsRef.current.delete(userId);
-      // Remove their highlights
-      activeHighlightsRef.current.delete(userId);
+    socket.on('user-disconnect', (socketId: string) => {
+      console.log('User disconnected:', socketId);
+      
+      // Find the user by socket ID and get their actual user ID
+      const disconnectedUser = usersRef.current.find(u => u.socketId === socketId);
+      const actualUserId = disconnectedUser?.id;
+      
+      // Remove cursor using socket ID (for DOM element)
+      removeCursor(socketId);
+      
+      // Remove cursor state using actual user ID
+      if (actualUserId) {
+        userCursorsRef.current.delete(actualUserId);
+        
+        // Update cursor state for UI
+        setUserCursorStates(prev => {
+          const newMap = new Map(prev);
+          newMap.delete(actualUserId);
+          return newMap;
+        });
+        
+        // Remove their highlights
+        activeHighlightsRef.current.delete(actualUserId);
+      }
+      
       applyAllHighlights();
     });
 
@@ -666,11 +758,15 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
             userCursorsRef.current.set(cursorUserId, newCursorPos);
             
             // Find the user data for this cursor and update local display
-            const userData = usersRef.current.find(u => u.socketId === cursorUserId);
+            const userData = usersRef.current.find(u => u.id === cursorUserId);
             if (userData) {
-              // Use debounced update for automatic position adjustments
-              debouncedUpdateCursor(cursorUserId, userData, newCursorPos, false, cursorPos);
-              console.log('Updated cursor for user:', cursorUserId, newCursorPos);
+              // Use socket ID for DOM element tracking
+              const socketId = userData.socketId;
+              if (socketId) {
+                // Use debounced update for automatic position adjustments
+                debouncedUpdateCursor(socketId, userData, newCursorPos, false, cursorPos);
+                console.log('Updated cursor for user:', cursorUserId, newCursorPos);
+              }
             } else {
               console.log('No user data found for cursor userId:', cursorUserId, usersRef.current);
             }
@@ -766,15 +862,24 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
                 <span>{currentUser.name} (You)</span>
               </div>
             )}
-            {users.map(user => (
-              <div key={user.id} className="user-item">
+            {users.map(user => {
+              const hasActiveCursor = userCursorStates.has(user.id);
+              return (
                 <div 
-                  className="user-color" 
-                  style={{ backgroundColor: user.color }}
-                ></div>
-                <span>{user.name}</span>
-              </div>
-            ))}
+                  key={user.id} 
+                  className={`user-item ${hasActiveCursor ? 'has-cursor' : 'no-cursor'}`}
+                  onClick={() => hasActiveCursor && jumpToUser(user.id)}
+                  title={hasActiveCursor ? `Click to jump to ${user.name}'s cursor` : `${user.name} has no active cursor`}
+                >
+                  <div 
+                    className="user-color" 
+                    style={{ backgroundColor: user.color }}
+                  ></div>
+                  <span>{user.name}</span>
+                  {hasActiveCursor && <span className="cursor-indicator">📍</span>}
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>

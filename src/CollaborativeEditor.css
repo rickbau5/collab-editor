@@ -77,6 +77,7 @@
   padding: 6px 8px;
   border-radius: 4px;
   transition: background-color 0.2s ease;
+  cursor: pointer;
 }
 
 .user-item:hover {
@@ -86,6 +87,35 @@
 .user-item.current-user {
   background-color: #e3f2fd;
   font-weight: 500;
+  cursor: default;
+}
+
+.user-item.current-user:hover {
+  background-color: #e3f2fd;
+}
+
+.user-item.has-cursor {
+  cursor: pointer;
+}
+
+.user-item.has-cursor:hover {
+  background-color: #d1ecf1;
+  border-left: 3px solid #17a2b8;
+}
+
+.user-item.no-cursor {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.user-item.no-cursor:hover {
+  background-color: #f8f9fa;
+}
+
+.cursor-indicator {
+  font-size: 10px;
+  margin-left: auto;
+  opacity: 0.7;
 }
 
 .user-color {
