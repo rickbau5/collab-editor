@@ -4,7 +4,7 @@ A real-time collaborative text editor built with React, TypeScript, Quill.js, an
 
 ## Demo
 
-_Demo gif coming soon_
+![Demo Video](./assets/demo.mp4)
 
 ## Features
 
