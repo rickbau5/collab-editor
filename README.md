@@ -4,7 +4,7 @@ A real-time collaborative text editor built with React, TypeScript, Quill.js, an
 
 ## Demo
 
-![Demo](https://github.com/rickbau5/collab-editor/raw/main/assets/demo.mp4)
+![Demo](./assets/demo.webm)
 
 ## Features
 
