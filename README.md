@@ -4,10 +4,7 @@ A real-time collaborative text editor built with React, TypeScript, Quill.js, an
 
 ## Demo
 
-<figure class="video_container">
-  <iframe src="assets/demo.webm" frameborder="0" allowfullscreen="true"> 
-</iframe>
-</figure>
+![Demo](./assets/demo.gif)
 
 ## Features
 
