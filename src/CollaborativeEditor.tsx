@@ -20,7 +20,8 @@ interface ActiveHighlight {
 }
 
 interface CollaborativeEditorProps {
-  documentId?: string;
+  documentId: string;
+  title?: string;
 }
 
 const COLORS = [
@@ -38,7 +39,7 @@ interface Delta {
   ops?: DeltaOp[];
 }
 
-const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
+const CollaborativeEditor: React.FC<CollaborativeEditorProps> = ({ documentId, title }) => {
   const editorRef = useRef<HTMLDivElement>(null);
   const quillRef = useRef<Quill | null>(null);
   const socketRef = useRef<Socket | null>(null);
@@ -578,7 +579,7 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
     socket.on('connect', () => {
       console.log('Connected to server as', socket.id);
       setIsConnected(true);
-      socket.emit('user-join', user);
+      socket.emit('user-join', { ...user, documentId });
     });
 
     socket.on('disconnect', () => {
@@ -587,16 +588,16 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
     });
 
     // Load initial document
-    socket.on('load-document', (documentState) => {
-      console.log('Loading document state:', documentState);
+    socket.on(`load-document-${documentId}`, (documentState) => {
+      console.log(`Loading document state for ${documentId}:`, documentState);
       if (documentState.ops && documentState.ops.length > 0) {
         quill.setContents(documentState.ops, 'silent');
       }
     });
 
     // Handle text changes from other users
-    socket.on('text-change', ({ userId, delta }) => {
-      console.log('Received delta from server for user:', userId, delta);
+    socket.on(`text-change-${documentId}`, ({ userId, delta }) => {
+      console.log(`Received delta from server for user: ${userId} in document ${documentId}`, delta);
       
       // Find the actual user ID from the socket ID
       const changeUser = usersRef.current.find(u => u.socketId === userId);
@@ -654,16 +655,16 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
     });
 
     // Handle user updates
-    socket.on('users-update', (updatedUsers: User[]) => {
-      console.log('Users update:', updatedUsers);
+    socket.on(`users-update-${documentId}`, (updatedUsers: User[]) => {
+      console.log(`Users update for document ${documentId}:`, updatedUsers);
       const filteredUsers = updatedUsers.filter(u => u.id !== user.id);
       setUsers(filteredUsers);
       usersRef.current = filteredUsers;
     });
 
     // Handle cursor changes from other users
-    socket.on('cursor-change', ({ userId, user: userData, range }) => {
-      console.log('Cursor change from user:', userId, range);
+    socket.on(`cursor-change-${documentId}`, ({ userId, user: userData, range }) => {
+      console.log(`Cursor change from user: ${userId} in document ${documentId}`, range);
       
       // Use the user's actual ID (UUID) instead of socket ID for consistency
       const actualUserId = userData.id;
@@ -705,8 +706,8 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
     });
 
     // Handle user disconnections
-    socket.on('user-disconnect', (socketId: string) => {
-      console.log('User disconnected:', socketId);
+    socket.on(`user-disconnect-${documentId}`, (socketId: string) => {
+      console.log(`User disconnected from document ${documentId}:`, socketId);
       
       // Find the user by socket ID and get their actual user ID
       const disconnectedUser = usersRef.current.find(u => u.socketId === socketId);
@@ -734,8 +735,8 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
     });
 
     // Handle highlight changes from other users
-    socket.on('highlight-change', ({ userId, user: userData, range }) => {
-      console.log('Highlight change from user:', userId, range);
+    socket.on(`highlight-change-${documentId}`, ({ userId, user: userData, range }) => {
+      console.log(`Highlight change from user: ${userId} in document ${documentId}`, range);
       if (range && range.length > 0) {
         addHighlight(userData.id, range, userData.color);
       }
@@ -743,10 +744,10 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
 
     // Listen for text changes and broadcast
     quill.on('text-change', (delta, _oldDelta, source) => {
-      console.log('Text change detected:', delta);
+      console.log(`Text change detected in document ${documentId}:`, delta);
       if (source === 'user') {
-        console.log('Broadcasting delta:', delta);
-        socket.emit('text-change', delta, source);
+        console.log(`Broadcasting delta for document ${documentId}:`, delta);
+        socket.emit('text-change', { documentId, delta, source });
         
         // Transform local view of remote cursors based on local changes
         userCursorsRef.current.forEach((cursorPos, cursorUserId) => {
@@ -793,7 +794,7 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
         setTimeout(() => {
           const range = quill.getSelection();
           if (range) {
-            socket.emit('selection-change', range, 'user');
+            socket.emit('selection-change', { documentId, range, source: 'user' });
           }
           // Update label visibility after text changes
           updateLabelVisibility();
@@ -806,13 +807,13 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
 
     // Listen for selection changes and broadcast cursor position
     quill.on('selection-change', (range, _oldRange, source) => {
-      console.log('Selection change detected:', range);
+      console.log(`Selection change detected in document ${documentId}:`, range);
       if (source === 'user') {
-        socket.emit('selection-change', range, source);
+        socket.emit('selection-change', { documentId, range, source });
         
         // If the selection has length > 0, also emit a highlight event
         if (range && range.length > 0) {
-          socket.emit('highlight-change', range, source);
+          socket.emit('highlight-change', { documentId, range, source });
         }
       }
       // Update label visibility based on new cursor position
@@ -836,7 +837,7 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
         quillRef.current = null;
       }
     };
-  }, [addHighlight, updateHighlight, applyAllHighlights, transformHighlightRange]);
+  }, [addHighlight, updateHighlight, applyAllHighlights, transformHighlightRange, documentId]);
 
 
 
@@ -844,7 +845,7 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
     <div className="collaborative-editor">
       <div className="editor-header">
         <div className="title">
-          <h1>📝 Collaborative Editor</h1>
+          <h1>📝 {title || `Document ${documentId}`}</h1>
           <div className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
             {isConnected ? '🟢 Connected' : '🔴 Disconnected'}
           </div>
