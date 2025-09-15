@@ -4,10 +4,7 @@ A real-time collaborative text editor built with React, TypeScript, Quill.js, an
 
 ## Demo
 
-<video width="600" controls>
-  <source src="./assets/demo.mp4" type="video/mp4">
-  Your browser does not support the video tag.
-</video>
+![Demo](https://github.com/rickbau5/collab-editor/raw/main/assets/demo.mp4)
 
 ## Features
 
