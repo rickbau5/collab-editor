@@ -737,7 +737,7 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = () => {
     socket.on('highlight-change', ({ userId, user: userData, range }) => {
       console.log('Highlight change from user:', userId, range);
       if (range && range.length > 0) {
-        addHighlight(userId, range, userData.color);
+        addHighlight(userData.id, range, userData.color);
       }
     });
 
