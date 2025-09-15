@@ -19,6 +19,18 @@ interface ActiveHighlight {
   color: string;
 }
 
+interface OutlineItem {
+  id: string;
+  text: string;
+  level: number;
+  index: number;
+}
+
+interface QuillRange {
+  index: number;
+  length: number;
+}
+
 interface CollaborativeEditorProps {
   documentId: string;
   title?: string;
@@ -47,12 +59,124 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = ({ documentId, t
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [userCursorStates, setUserCursorStates] = useState<Map<string, boolean>>(new Map());
+  const [outlineItems, setOutlineItems] = useState<OutlineItem[]>([]);
   const cursorsRef = useRef<Map<string, HTMLElement>>(new Map());
   const userCursorsRef = useRef<Map<string, { index: number; length: number }>>(new Map());
   const usersRef = useRef<User[]>([]);
   const cursorUpdateTimeouts = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const flashTimeouts = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const activeHighlightsRef = useRef<Map<string, ActiveHighlight>>(new Map());
+
+    // Function to extract outline items from editor content
+  const extractOutlineItems = useCallback(() => {
+    if (!quillRef.current) return [];
+
+    const quill = quillRef.current;
+    const items: OutlineItem[] = [];
+    let itemCounter = 0;
+
+    try {
+      // Get all lines in the editor
+      const text = quill.getText();
+      const lines = text.split('\n');
+      let lineIndex = 0;
+
+      // Check each line for header formatting
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        
+        if (line.trim()) {
+          // Get the formatting for this line
+          const lineFormats = quill.getFormat(lineIndex, line.length);
+          
+          // Check if this line has header formatting
+          if (lineFormats.header) {
+            const headerLevel = lineFormats.header;
+            if (typeof headerLevel === 'number' && headerLevel >= 1 && headerLevel <= 6) {
+              items.push({
+                id: `outline-${itemCounter++}`,
+                text: line.trim(),
+                level: headerLevel,
+                index: lineIndex
+              });
+            }
+          }
+        }
+        
+        // Move to next line (include the newline character)
+        lineIndex += line.length + 1;
+      }
+
+      console.log('Extracted outline items:', items);
+      return items;
+    } catch (error) {
+      console.warn('Error extracting outline items:', error);
+      return [];
+    }
+  }, []);
+
+  // Function to update outline items
+  const updateOutlineItems = useCallback(() => {
+    console.log('updateOutlineItems called');
+    const items = extractOutlineItems();
+    console.log('Setting outline items:', items);
+    setOutlineItems(items);
+  }, [extractOutlineItems]);
+
+  // Function to jump to an outline item
+  const jumpToOutlineItem = useCallback((item: OutlineItem) => {
+    if (!quillRef.current) return;
+
+    const quill = quillRef.current;
+    
+    try {
+      // Set selection to the beginning of the header text
+      quill.setSelection(item.index, item.text.length, 'user');
+      
+      // Scroll to the header position within the editor
+      const bounds = quill.getBounds(item.index, item.text.length);
+      if (bounds) {
+        const editorElement = quill.container.querySelector('.ql-editor') as HTMLElement;
+        if (editorElement) {
+          // Scroll the editor element directly
+          const targetScrollTop = bounds.top + editorElement.scrollTop - 50; // 50px from top
+          editorElement.scrollTo({
+            top: Math.max(0, targetScrollTop),
+            behavior: 'smooth'
+          });
+        }
+        
+        // For mobile/stacked view, also scroll the page to show the editor
+        // Check if we're in mobile view by looking at window width or layout
+        const isMobileView = window.innerWidth <= 768;
+        if (isMobileView) {
+          setTimeout(() => {
+            // Scroll to the collaborative editor container
+            const collaborativeEditor = document.querySelector('.collaborative-editor') as HTMLElement;
+            if (collaborativeEditor) {
+              // Scroll to show the editor header (including toolbar)
+              const headerElement = collaborativeEditor.querySelector('.editor-header') as HTMLElement;
+              if (headerElement) {
+                headerElement.scrollIntoView({
+                  behavior: 'smooth',
+                  block: 'start'
+                });
+              }
+            }
+          }, 200);
+        }
+      }
+      
+      // Focus the editor
+      quill.focus();
+      quill.focus();
+      quill.focus();
+      
+      console.log(`Jumped to outline item: ${item.text} at position ${item.index}`);
+    } catch (error) {
+      console.warn('Error jumping to outline item:', error);
+    }
+  }, []);
 
   // Function to transform cursor position based on a delta
   const transformCursorPosition = (cursorIndex: number, delta: Delta): number => {
@@ -153,19 +277,11 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = ({ documentId, t
         const editorElement = quill.container.querySelector('.ql-editor') as HTMLElement;
         if (editorElement) {
           // Scroll the cursor position into view
-          const scrollContainer = editorElement;
-          const targetTop = bounds.top;
-          const containerHeight = scrollContainer.clientHeight;
-          const scrollTop = scrollContainer.scrollTop;
-          
-          // If the cursor is not visible, scroll to center it
-          if (targetTop < 0 || targetTop > containerHeight - 50) {
-            const newScrollTop = scrollTop + targetTop - containerHeight / 2;
-            scrollContainer.scrollTo({
-              top: Math.max(0, newScrollTop),
-              behavior: 'smooth'
-            });
-          }
+          const targetScrollTop = bounds.top + editorElement.scrollTop - editorElement.clientHeight / 2;
+          editorElement.scrollTo({
+            top: Math.max(0, targetScrollTop),
+            behavior: 'smooth'
+          });
         }
       }
       
@@ -232,13 +348,18 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = ({ documentId, t
     applyAllHighlights();
   }, [applyAllHighlights]);
 
-    // Function to add a new highlight
-    const addHighlight = useCallback((userId: string, range: { index: number; length: number }, color: string) => {
-      updateHighlight(userId, range, color);
-    }, [updateHighlight]);
+  // Function to add a new highlight
+  const addHighlight = useCallback((userId: string, range: { index: number; length: number }, color: string) => {
+    updateHighlight(userId, range, color);
+  }, [updateHighlight]);
 
   useEffect(() => {
-    if (!editorRef.current || quillRef.current) return;
+    if (!editorRef.current) return;
+
+    // Check if already initialized and still connected to avoid double-init during HMR
+    if (quillRef.current && socketRef.current && socketRef.current.connected) {
+      return;
+    }
 
     // Generate user info
     const userName = `User_${Date.now().toString().slice(-3)}_${Math.floor(Math.random() * 100)}`;
@@ -252,7 +373,6 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = ({ documentId, t
     setCurrentUser(user);
 
     const cursors = new Map<string, HTMLElement>();
-    const userCursors = userCursorsRef.current;
     cursorsRef.current = cursors;
 
     // Debounced cursor update function
@@ -548,33 +668,49 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = ({ documentId, t
     };
 
     // Initialize Quill
-    const quill = new Quill(editorRef.current, {
-      theme: 'snow',
-      modules: {
-        toolbar: [
-          ['bold', 'italic', 'underline', 'strike'],
-          ['blockquote', 'code-block'],
-          [{ 'header': 1 }, { 'header': 2 }],
-          [{ 'list': 'ordered'}, { 'list': 'bullet' }],
-          [{ 'script': 'sub'}, { 'script': 'super' }],
-          [{ 'indent': '-1'}, { 'indent': '+1' }],
-          [{ 'direction': 'rtl' }],
-          [{ 'size': ['small', false, 'large', 'huge'] }],
-          [{ 'header': [1, 2, 3, 4, 5, 6, false] }],
-          [{ 'color': [] }, { 'background': [] }],
-          [{ 'font': [] }],
-          [{ 'align': [] }],
-          ['clean'],
-          ['link', 'image']
-        ]
-      },
-      placeholder: 'Start typing to collaborate...'
-    });
-    quillRef.current = quill;
+    let quill: Quill;
+    if (editorRef.current) {
+      // Clear any existing content in the editor container
+      editorRef.current.innerHTML = '';
+      
+      quill = new Quill(editorRef.current, {
+        theme: 'snow',
+        modules: {
+          toolbar: [
+            ['bold', 'italic', 'underline', 'strike'],
+            ['blockquote', 'code-block'],
+            [{ 'header': 1 }, { 'header': 2 }],
+            [{ 'list': 'ordered'}, { 'list': 'bullet' }],
+            [{ 'script': 'sub'}, { 'script': 'super' }],
+            [{ 'indent': '-1'}, { 'indent': '+1' }],
+            [{ 'direction': 'rtl' }],
+            [{ 'size': ['small', false, 'large', 'huge'] }],
+            [{ 'header': [1, 2, 3, 4, 5, 6, false] }],
+            [{ 'color': [] }, { 'background': [] }],
+            [{ 'font': [] }],
+            [{ 'align': [] }],
+            ['clean'],
+            ['link', 'image']
+          ]
+        },
+        placeholder: 'Start typing to collaborate...'
+      });
+      quillRef.current = quill;
+    } else {
+      console.error('Editor ref is not available');
+      return;
+    }
 
-    // Initialize Socket.IO
-    const socket = io('http://localhost:3001');
-    socketRef.current = socket;
+    // Initialize Socket.IO (only if not already connected)
+    let socket = socketRef.current;
+    if (!socket || !socket.connected) {
+      if (socket && !socket.connected) {
+        // Clean up disconnected socket
+        socket.disconnect();
+      }
+      socket = io('http://localhost:3001');
+      socketRef.current = socket;
+    }
 
     socket.on('connect', () => {
       console.log('Connected to server as', socket.id);
@@ -592,6 +728,8 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = ({ documentId, t
       console.log(`Loading document state for ${documentId}:`, documentState);
       if (documentState.ops && documentState.ops.length > 0) {
         quill.setContents(documentState.ops, 'silent');
+        // Update outline after loading document
+        setTimeout(() => updateOutlineItems(), 100);
       }
     });
 
@@ -651,6 +789,7 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = ({ documentId, t
       // Reapply highlights after text changes
       setTimeout(() => {
         applyAllHighlights();
+        updateOutlineItems(); // Update outline when content changes
       }, 0);
     });
 
@@ -743,7 +882,7 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = ({ documentId, t
     });
 
     // Listen for text changes and broadcast
-    quill.on('text-change', (delta, _oldDelta, source) => {
+    quill.on('text-change', (delta: Delta, _oldDelta: Delta, source: string) => {
       console.log(`Text change detected in document ${documentId}:`, delta);
       if (source === 'user') {
         console.log(`Broadcasting delta for document ${documentId}:`, delta);
@@ -801,12 +940,15 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = ({ documentId, t
 
           // Reapply highlights after local text changes
           applyAllHighlights();
+          
+          // Update outline after local text changes
+          updateOutlineItems();
         }, 0);
       }
     });
 
     // Listen for selection changes and broadcast cursor position
-    quill.on('selection-change', (range, _oldRange, source) => {
+    quill.on('selection-change', (range: QuillRange | null, _oldRange: QuillRange | null, source: string) => {
       console.log(`Selection change detected in document ${documentId}:`, range);
       if (source === 'user') {
         socket.emit('selection-change', { documentId, range, source });
@@ -820,24 +962,22 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = ({ documentId, t
       updateLabelVisibility();
     });
 
+    // Store refs for cleanup
+    const currentSocket = socketRef.current;
+    const currentTimeouts = cursorUpdateTimeouts.current;
+
+    // Return cleanup function
     return () => {
-      if (socketRef.current) {
-        socketRef.current.disconnect();
+      if (currentSocket) {
+        currentSocket.disconnect();
       }
-      // Clean up cursors
-      cursors.forEach(cursor => cursor.remove());
-      cursors.clear();
-      userCursors.clear();
-      // Clean up Quill instance
-      if (quillRef.current) {
-        const container = quillRef.current.container;
-        if (container && container.parentNode) {
-          container.parentNode.removeChild(container);
-        }
-        quillRef.current = null;
+      
+      if (currentTimeouts) {
+        currentTimeouts.forEach((timeout) => clearTimeout(timeout));
+        currentTimeouts.clear();
       }
     };
-  }, [addHighlight, updateHighlight, applyAllHighlights, transformHighlightRange, documentId]);
+  }, [addHighlight, updateHighlight, applyAllHighlights, transformHighlightRange, updateOutlineItems, documentId]);
 
 
 
@@ -885,8 +1025,51 @@ const CollaborativeEditor: React.FC<CollaborativeEditorProps> = ({ documentId, t
         </div>
       </div>
 
-      <div className="editor-container">
-        <div ref={editorRef} className="editor" />
+      <div className="editor-content">
+        <div className="outline-sidebar">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+            <h3 style={{ margin: 0 }}>📋 Outline</h3>
+            <div style={{ display: 'flex', gap: '4px' }}>
+                <button 
+                onClick={() => updateOutlineItems()}
+                style={{ 
+                  background: '#007bff', 
+                  color: 'white', 
+                  border: 'none', 
+                  borderRadius: '4px', 
+                  padding: '4px 8px', 
+                  fontSize: '12px',
+                  cursor: 'pointer'
+                }}
+                title="Refresh outline to update headings"
+                >
+                🔄
+                </button>
+            </div>
+          </div>
+          <div className="outline-list">
+            {outlineItems.length === 0 ? (
+              <div className="outline-empty">
+                No headings found. Add some headers to see the outline.
+              </div>
+            ) : (
+              outlineItems.map(item => (
+                <div
+                  key={item.id}
+                  className={`outline-item outline-level-${item.level}`}
+                  onClick={() => jumpToOutlineItem(item)}
+                  title={`Jump to: ${item.text}`}
+                >
+                  <span className="outline-text">{item.text}</span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        <div className="editor-container">
+          <div ref={editorRef} className="editor" key={`editor-${documentId}`} />
+        </div>
       </div>
       
       <div className="editor-footer">
